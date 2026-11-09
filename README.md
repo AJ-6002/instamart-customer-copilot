@@ -135,7 +135,97 @@ Why ties make RANK and ROW\_NUMBER differ: when two customers in a city have the
 
 ## Part B
 
-To be completed.
+### RFM table (snapshot 2025-10-01)
+| Item | Value |
+|---|---|
+| Customers with a completed order | 1,175 |
+| Recency (days): median / min / max | 19 / 0 / 180 |
+| Frequency: mean / max | 9.46 / 33 |
+| Monetary (INR): mean / max | 2,552.06 / 14,766.55 |
+
+### K-means (StandardScaler, n_init=10, random_state=42)
+| K | Inertia | Silhouette |
+|---|---|---|
+| 2 | 1820.8 | 0.465 |
+| 3 | 1268.2 | 0.445 |
+| 4 | 743.1 | 0.526 |
+| 5 | 617.4 | 0.480 |
+| 6 | 503.2 | 0.482 |
+| 7 | 408.5 | 0.416 |
+| 8 | 366.5 | 0.412 |
+
+**Chosen K = 4.** Inertia falls by about 525 from K=3 to K=4 but only about 125 from K=4 to K=5, so the elbow is at K=4. K=4 also has the highest silhouette among {3, 4, 5}, and four segments is a number the business can run separate campaigns for.
+
+Inertia of K=8 is always lower than K=2 because inertia is the total squared distance to the cluster centres, and more clusters can only shrink it (at K equal to the number of customers it is zero). So a lower inertia alone just rewards more clusters and cannot pick K.
+
+### Segments
+Cluster numbers are only labels with no ordering.
+
+| Segment | Name | Size | Mean recency | Mean frequency | Mean monetary | Action |
+|---|---|---|---|---|---|---|
+| 0 | Casual Buyers | 436 | 28.86 | 3.77 | 1,057.62 | Small offer to nudge a second order each month |
+| 1 | Premium Big Spenders (Premium) | 138 | 24.12 | 6.77 | 7,129.70 | Early access to electronics deals, priority support |
+| 2 | Loyal Regulars | 419 | 8.77 | 19.40 | 3,410.02 | Loyalty scheme and bundle offers |
+| 3 | Lapsing Customers | 182 | 109.04 | 2.20 | 685.99 | Win-back coupon before they leave |
+
+PCA (2 components) on the scaled RFM matrix: explained variance 0.634 and 0.218, total 0.852.
+Output: outputs/customer_segments.csv (customer_id, recency, frequency, monetary, segment_id, segment_name, is_premium).
+
+### Lapse problem
+Cutoff 2025-09-01. Cohort: customers with at least one completed order before the cutoff. Label lapsed = 1 if no completed order from 2025-09-01 to 2025-09-30.
+
+| Item | Value |
+|---|---|
+| Cohort | 1,156 customers |
+| Lapsed | 443 (38.32%) |
+| Train / test | 924 / 232 (stratified, random_state=42) |
+| Baseline "never lapsed": accuracy / lapsed-class F1 | 0.616 / 0.000 |
+
+Features: recency, frequency, monetary, average discount, cancellation rate, average delivery minutes, favourite category, city, age, gender, tenure in days.
+
+**Leakage statements.** No order dated on or after 2025-09-01 entered any feature. The segment labels from the segments step were not used as features. The one-hot encoder and the scaler were fitted on training rows only (inside a scikit-learn Pipeline) and only applied to the test rows. The over-sampler touched training rows only. No feature column contains a missing value (0 missing in both train and test).
+
+Scaler check: the scaler's learned mean of frequency was 8.115 and the full-cohort mean was 8.029. They differ because the scaler was fitted on the 924 training rows only, while the full-cohort mean also includes the 232 test rows.
+
+### Models
+| Model | Best parameters | Best CV F1 |
+|---|---|---|
+| Logistic regression (C in 0.01, 0.1, 1, 10, 100; cv=5) | C = 100 | 0.651 |
+| Random forest (max_depth in 3, 5, 8; min_samples_leaf in 5, 10, 20; cv=5) | max_depth 8, min_samples_leaf 10 | 0.682 |
+
+Test set, lapsed class:
+| Model | Confusion matrix [[TN, FP], [FN, TP]] | Precision | Recall | F1 |
+|---|---|---|---|---|
+| Logistic regression | [[111, 32], [31, 58]] | 0.644 | 0.652 | 0.648 |
+| Random forest | [[112, 31], [31, 58]] | 0.652 | 0.652 | 0.652 |
+
+**Selected: random forest** (test F1 0.652, above the 0.55 minimum). The two models are close, with the forest slightly ahead on F1 and precision. Missing a lapsing customer means lost future revenue, while wrongly targeting a loyal customer costs only a small coupon, so missing a lapser is the costlier mistake. The forest also catches as many lapsers as the logistic model (recall 0.652) with fewer false alarms.
+
+### Class-balance experiment
+Lapsed training rows were duplicated at random (with replacement, random_state=42) until both classes had 570 rows. The best logistic regression was refitted on it and tested on the unchanged test set.
+
+| Logistic regression | Precision | Recall | F1 |
+|---|---|---|---|
+| Un-balanced | 0.644 | 0.652 | 0.648 |
+| Balanced | 0.589 | 0.854 | 0.697 |
+
+Recall moved most (0.652 to 0.854), while precision did not rise (it fell slightly). For the retention team this means more lapsing customers are caught, at the price of more loyal customers receiving an offer they did not need.
+
+### Interpretation
+Top 5 random forest features: frequency (0.307), monetary (0.247), recency (0.115), cancel_rate (0.062), avg_discount (0.058).
+- frequency: customers who order often are far less likely to lapse.
+- monetary: total spend is the second strongest signal of staying.
+- recency: the longer since the last order, the more likely the customer is to lapse.
+
+Logistic regression coefficients (on scaled features):
+- recency +0.040: a longer gap since the last order slightly raises lapse risk.
+- frequency -1.698: more orders strongly lowers lapse risk.
+- tenure_days -0.050: older customers are slightly less likely to lapse.
+
+Model saved to outputs/lapse_model.joblib; the reloaded model reproduced the original test predictions exactly (True).
+
+### Retention list
+outputs/retention_list.csv holds the 10 Premium test-set customers with the highest predicted lapse probability. 0 of the 10 truly lapsed. The Premium flag comes from the whole-window RFM, which includes September (the window that defines the label), so it is a post-hoc whole-window label. The retention list is illustrative and not a leakage-free evaluation.
 
 ## Part C
 
