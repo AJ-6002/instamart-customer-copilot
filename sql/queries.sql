@@ -25,3 +25,37 @@ FROM customers c
 LEFT JOIN orders o
   ON c.customer_id = o.customer_id AND o.status = 'completed'
 WHERE o.order_id IS NULL;
+
+-- Q5: CTE, customers above the average total spend
+WITH spend AS (
+  SELECT customer_id, SUM(order_amount) AS total_spend
+  FROM orders WHERE status = 'completed' GROUP BY customer_id
+),
+avg_spend AS (SELECT AVG(total_spend) AS avg_total FROM spend)
+SELECT s.customer_id, ROUND(s.total_spend, 2) AS total_spend, ROUND(a.avg_total, 2) AS avg_total
+FROM spend s, avg_spend a
+WHERE s.total_spend > a.avg_total;
+
+-- Q6: ranking window functions per city
+WITH spend AS (
+  SELECT c.customer_id, c.city, SUM(o.order_amount) AS total_spend
+  FROM orders o JOIN customers c ON o.customer_id = c.customer_id
+  WHERE o.status = 'completed'
+  GROUP BY c.customer_id, c.city
+)
+SELECT customer_id, city, ROUND(total_spend, 2) AS total_spend,
+  RANK() OVER (PARTITION BY city ORDER BY total_spend DESC) AS rnk,
+  DENSE_RANK() OVER (PARTITION BY city ORDER BY total_spend DESC) AS dense_rnk,
+  ROW_NUMBER() OVER (PARTITION BY city ORDER BY total_spend DESC) AS row_num
+FROM spend
+ORDER BY city, rnk;
+
+-- Q7: daily revenue with running total
+WITH daily AS (
+  SELECT substr(order_ts, 1, 10) AS day, SUM(order_amount) AS revenue
+  FROM orders WHERE status = 'completed' GROUP BY substr(order_ts, 1, 10)
+)
+SELECT day, ROUND(revenue, 2) AS revenue,
+  ROUND(SUM(revenue) OVER (ORDER BY day), 2) AS cumulative_revenue
+FROM daily
+ORDER BY day;
