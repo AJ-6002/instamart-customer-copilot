@@ -1,7 +1,6 @@
 """generate_data.py -- deterministic synthetic data for the Instamart Customer Intelligence capstone.
 Run:  python generate_data.py        (writes ./data/raw/*.csv and ./data/policies/*.txt)
-Uses only the Python standard library. All data is synthetic and fictional.
-"""
+Uses only the Python standard library. All data is synthetic and fictional."""
 import csv, math, os, random
 from datetime import datetime, timedelta
 
@@ -32,11 +31,9 @@ CAT_IDX = {}
 for i, (_, c, _) in enumerate(PRODUCTS):
     CAT_IDX.setdefault(c, []).append(i)
 
-
 def write(name, header, rows):
     with open(os.path.join(RAW, name), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f); w.writerow(header); w.writerows(rows)
-
 
 def poisson(lam):
     L, k, p = math.exp(-lam), 0, 1.0
@@ -46,16 +43,13 @@ def poisson(lam):
             return k
         k += 1
 
-
 def mangle_city(c):
     r = rng.random()
     return c.lower() if r < .20 else c.upper() if r < .32 else (" " + c + " ") if r < .42 else c
 
-
 def mangle_gender(g):
     opts = {"male": ["male", "Male", "M", "m", "MALE"], "female": ["female", "Female", "F", "f", "FEMALE"]}[g]
     return rng.choice(opts)
-
 
 # ---------------- products ----------------
 write("products.csv", ["product_id", "product_name", "category", "price_inr"],
@@ -79,8 +73,6 @@ write("customers.csv", ["customer_id", "city", "signup_date", "age", "gender"], 
 # ---------------- orders ----------------
 WIN_START, WIN_DAYS = datetime(2025, 4, 1), 183          # 2025-04-01 .. 2025-09-30
 RATE = {"premium": 1.0, "frequent": 3.5, "rare": 0.5}   # expected orders per month
-
-
 def pick_product(a):
     if a == "premium":
         pool = CAT_IDX["Electronics"] if rng.random() < .7 else CAT_IDX["Personal Care"] + CAT_IDX["Snacks"]
@@ -88,7 +80,6 @@ def pick_product(a):
     if a == "frequent":
         return rng.choice(CAT_IDX["Grocery"] + CAT_IDX["Dairy"] + CAT_IDX["Snacks"]), rng.randint(1, 3)
     return rng.choice(CAT_IDX["Grocery"] + CAT_IDX["Dairy"] + CAT_IDX["Snacks"] + CAT_IDX["Personal Care"]), rng.randint(1, 2)
-
 
 rows, oid = [], 100000
 for cid, a in arche.items():
@@ -109,7 +100,6 @@ for cid, a in arche.items():
         rows.append({"order_id": f"ORD-{oid}", "customer_id": cid, "product_id": f"P{pi+1:03d}", "quantity": qty,
                      "order_ts": ts, "status": status, "discount_pct": disc, "order_amount": amount,
                      "delivery_minutes": deliv})
-
 out = []
 for k, r in enumerate(rows):
     if k % 100 == 7 and r["status"] == "completed" and r["delivery_minutes"] != "":
@@ -151,8 +141,7 @@ cats = list(T)
 for n in range(1, 157):
     cat = cats[(n - 1) % 4]
     cid = rng.choice(cust_with_orders)
-    txt = rng.choice(T[cat]).format(o=order_by_cust[cid], e=f"user{n}@example.com",
-                                    p=str(rng.choice("6789")) + "".join(rng.choice("0123456789") for _ in range(9)))
+    txt = rng.choice(T[cat]).format(o=order_by_cust[cid], e=f"user{n}@example.com", p=str(rng.choice("6789")) + "".join(rng.choice("0123456789") for _ in range(9)))
     tickets.append([f"T{n:04d}", cid, order_by_cust[cid], txt, cat])
 FILL = "The same problem keeps happening and nobody has given me a clear answer yet. "
 for n in range(157, 161):                         # 4 empty tickets
@@ -194,23 +183,15 @@ with open(os.path.join(RAW, "policy_eval.csv"), "w", newline="", encoding="utf-8
 # ---------------- agent scenarios (simulated refund requests) ----------------
 from collections import Counter
 cnt = Counter(r[0] for r in out)
-
-
 def clean_row(r):                                    # single-record, fully valid order
     try:
         return cnt[r[0]] == 1 and r[5] in ("completed", "cancelled") and float(r[7]) > 0 and \
             (r[5] == "cancelled" or (r[8] != "" and 8 <= int(r[8]) <= 75))
     except ValueError:
         return False
-
-
 ok_rows = sorted((r for r in out if clean_row(r)), key=lambda r: r[0])
-
-
 def first(pred):
     return next(r for r in ok_rows if pred(r))
-
-
 late_small = [r for r in ok_rows if r[5] == "completed" and int(r[8]) > 45 and float(r[7]) <= 1000][:2]
 late_big = first(lambda r: r[5] == "completed" and int(r[8]) > 45 and float(r[7]) > 1000)
 on_time = first(lambda r: r[5] == "completed" and int(r[8]) <= 45)
@@ -227,5 +208,4 @@ with open(os.path.join(RAW, "agent_scenarios.csv"), "w", newline="", encoding="u
     w = csv.writer(f); w.writerow(["scenario_id", "customer_id", "message", "expected_outcome", "expected_refund_inr"])
     for i, (cid, msg, oc, amt) in enumerate(SC, 1):
         w.writerow([f"S{i}", cid, msg, oc, f"{amt:.2f}"])
-
 print("generated: customers=%d products=%d orders_raw=%d tickets=%d" % (len(cust), len(PRODUCTS), len(out), len(tickets)))
