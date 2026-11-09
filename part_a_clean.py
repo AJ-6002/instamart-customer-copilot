@@ -65,3 +65,28 @@ print("missing order_amount:", orders["order_amount"].isna().sum())
 print("missing delivery, completed:", orders.loc[done, "delivery_minutes"].isna().sum())
 print("missing delivery, cancelled:", orders.loc[orders["status"] == "cancelled", "delivery_minutes"].isna().sum())
 print("sum of completed order_amount:", round(orders.loc[done, "order_amount"].sum(), 2))
+# ================= SAVE =================
+import os
+import sqlite3
+
+os.makedirs("data/clean", exist_ok=True)
+
+# Dates as plain text, in the form the brief asks for
+customers["signup_date"] = customers["signup_date"].dt.strftime("%Y-%m-%d")
+orders["order_ts"] = orders["order_ts"].dt.strftime("%Y-%m-%d %H:%M:%S")
+
+# Keep only the original order columns, sorted by order_id
+order_cols = ["order_id", "customer_id", "product_id", "quantity", "order_ts",
+              "status", "discount_pct", "order_amount", "delivery_minutes"]
+orders_out = orders[order_cols].sort_values("order_id")
+
+customers.to_csv("data/clean/customers.csv", index=False)
+products.to_csv("data/clean/products.csv", index=False)
+orders_out.to_csv("data/clean/orders.csv", index=False)
+
+con = sqlite3.connect("data/instamart.db")
+customers.to_sql("customers", con, if_exists="replace", index=False)
+products.to_sql("products", con, if_exists="replace", index=False)
+orders_out.to_sql("orders", con, if_exists="replace", index=False)
+con.close()
+print("Saved clean CSVs and data/instamart.db")
