@@ -5,3 +5,5 @@ __pycache__/
 .env
 data/instamart.db
 state/*.json
+data/raw/
+data/policies/
