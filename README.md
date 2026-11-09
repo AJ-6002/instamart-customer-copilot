@@ -229,13 +229,107 @@ outputs/retention_list.csv holds the 10 Premium test-set customers with the high
 
 ## Part C
 
-To be completed.
+### Guardrails and redaction
+| Item | Value |
+|---|---|
+| Empty tickets (skipped_empty, never sent to the model) | 4 |
+| Long tickets (flagged_long, 734 estimated tokens each, limit 400) | 4 |
+| Eligible tickets | 156 |
+| Emails / phones / order ids replaced | 55 / 91 / 132 |
+| Total substitutions | 278 |
+| Matches left after re-applying the patterns | 0 |
+
+The user message sent to the model is exactly the redacted ticket text. An assertion in the code checks that no prompt contains an email, phone number or order id.
+
+### Prompts
+Both prompts contain the word CLASSIFY, list billing, delivery, technical and fraud, and ask for JSON only. The zero-shot prompt has no examples. The few-shot prompt has a line EXAMPLES: followed by four labelled examples, including a fraud example.
+
+### Retries
+Every model call is wrapped in a retry function: at most 3 retries, wait = 0.05 x 2^n x random.uniform(0.9, 1.15) seconds, and one log line per retry (ticket id, retry number, wait). mock_llm.reset() is called before each run. A full run over the 156 eligible tickets has 19 TransientLLMErrors, and all 19 were recovered by a retry, so no ticket ended with a permanent error. Across the four runs the log has 70 lines (outputs/retry_log.txt). Every wait is for retry number 0 and lies between 0.0453 and 0.0575 seconds.
+
+### Output validation
+A reply is accepted as classified_json if it is valid JSON with an allowed category. Otherwise the lowercase words (re.findall) are extracted and the reply is accepted as classified_keyword if exactly one allowed category word is present. Everything else is flagged_invalid_output and goes to human review. Nothing is guessed.
+
+| Status (full run, both prompts) | Tickets |
+|---|---|
+| classified_json | 135 |
+| classified_keyword | 12 |
+| flagged_invalid_output | 9 |
+| skipped_empty | 4 |
+| flagged_long | 4 |
+
+### Zero-shot versus few-shot
+| Run | Classified | Correct | Accuracy | Total tokens | Tokens per classified ticket |
+|---|---|---|---|---|---|
+| Zero-shot | 147 | 126 | 85.7% | 8,932 | 60.8 |
+| Few-shot | 147 | 147 | 100% | 23,752 | 161.6 |
+
+Zero-shot confusion table (rows = true category, columns = predicted):
+
+| True \ Predicted | billing | delivery | fraud | technical |
+|---|---|---|---|---|
+| billing | 38 | 0 | 0 | 0 |
+| delivery | 0 | 36 | 0 | 0 |
+| fraud | 11 | 0 | 23 | 0 |
+| technical | 10 | 0 | 0 | 29 |
+
+All 21 zero-shot errors are fraud tickets predicted as billing (11) or technical tickets predicted as billing (10). The few-shot prompt costs about 100.8 more tokens per ticket (161.6 versus 60.8, about 2.7 times) and removes all 21 errors, which is about 706 extra tokens for each ticket corrected. This is worth paying when a wrong label is costly, and here a fraud ticket mislabelled as billing would miss the security team and its 2-hour target. Zero-shot is enough when the categories are easy to tell apart and tokens are tight.
+
+### Token budget
+With a zero-shot run and TOKEN_BUDGET = 6000, 51 tickets ended budget_exhausted and were routed to human review (outputs/triage_budget_demo.csv).
+
+### Routing and final output
+outputs/triage_results.csv comes from a few-shot run with TOKEN_BUDGET = 100000 and has 164 rows. Rules: skipped_empty, flagged_long, flagged_invalid_output and budget_exhausted go to human_review with priority NORMAL; fraud goes to security_team with priority HIGH; premium customers go to premium_desk with priority HIGH; everything else goes to support_queue with priority NORMAL. A customer with no row in the segment file counts as not premium.
+
+| Route | Tickets |
+|---|---|
+| support_queue | 102 |
+| security_team | 34 |
+| human_review | 17 (4 empty, 4 long, 9 invalid output) |
+| premium_desk | 11 |
+
+Rule-validated and routed automatically: 147 tickets (135 JSON, 12 keyword). Sent to a human: 17 tickets.
 
 ## Part D
 
-To be completed.
+### Chunking and retrieval
+Each of the five policy files is split into chunks of 40 words with an overlap of 10 words (a new chunk starts every 30 words). Chunking stops after the first chunk whose end reaches the last word. The source file name is stored with every chunk.
+
+| Document | Chunks |
+|---|---|
+| refund_policy.txt | 4 |
+| delivery_policy.txt | 3 |
+| escalation_policy.txt | 3 |
+| payment_policy.txt | 3 |
+| privacy_policy.txt | 2 |
+| Total | 15 |
+
+Chunks are vectorised with TfidfVectorizer and ranked by cosine similarity. For the query "refund policy late delivery", all top three chunks come from refund_policy.txt.
+
+TF (term frequency) measures how often a word appears in a chunk, and IDF (inverse document frequency) measures how rare the word is across all chunks, so rare words count more than common ones. A limitation is that TF-IDF matches words and not meaning, so two phrasings with the same meaning but different words, such as "money back" and "refund", would not match well.
+
+### Answering
+answer(question) retrieves three chunks and sends two messages to mock_llm.chat: a system message with the words POLICY ASSISTANT (answer only from the context, otherwise say the information was not found) and a user message of the form CONTEXT: (three chunks, each prefixed with [file name] on its own line) then QUESTION: and the question. It returns the answer and the sources used.
+
+### Retrieval and grounding evaluation (14 questions)
+| Chunking | Chunks | Expected doc in top 3 (of 12) | Answer contains expected fact (of 12) | Fallback on unanswerable (of 2) |
+|---|---|---|---|---|
+| 40 words, overlap 10 | 15 | 12 | 12 | 2 |
+| 40 words, overlap 0 | 13 | 12 | 10 | 2 |
+
+With overlap 0, two questions break: "What delivery time makes a completed order eligible for a full refund?" and "How soon is money returned when a payment fails but is deducted?". The right document was still retrieved, but the answer sentence (for example "more than 45 minutes" or "48 hours") was split across a chunk boundary, so no single chunk held the whole sentence and the answer lacked the expected fact. An overlap of 10 words keeps such sentences together in at least one chunk.
 
 ## Limitations and Next Steps
 
-To be completed after Parts B to D. It must state that the Premium flag is a post-hoc whole-window label, so the retention list is illustrative and not a leakage-free evaluation.
+**Limitations**
+- The Premium flag comes from the whole-window RFM of Part B task 3, which includes September, the window that defines the lapse label. It is a post-hoc whole-window label, so the retention list is illustrative and not a leakage-free evaluation (0 of the 10 listed customers truly lapsed).
+- All data is synthetic and fictional, and the lapse model was tested on only 232 customers, so its F1 of about 0.65 is a rough estimate.
+- All model calls use the offline mock_llm.py, which classifies by keyword matching. Its accuracy and token counts do not predict how a real hosted model would behave.
+- TF-IDF retrieval matches words, not meaning, and was tested on only 14 questions over five short documents.
+- Cleaning fills missing values with medians and product prices. These are assumptions, and they hide how uncertain the real values are.
 
+**Next steps**
+- Rebuild the retention list with a segment label computed only from data before the cutoff, so it can be evaluated without leakage.
+- Add features such as order gaps and category mix to the lapse model, and compare it against the baseline over several time windows.
+- Replace TF-IDF with a semantic retriever and test it on a larger set of questions.
+- Send the 17 tickets that need human review into a queue and track how often a human changes the model's label.
